@@ -201,7 +201,7 @@ try {
     a:hover { text-decoration: underline; }
 </style>")
         [void]$htmlBuilder.AppendLine('</head><body>')
-        [void]$htmlBuilder.AppendLine("<div class='header-container'><h1>Monthly Patch Compliance Report</h1><a href='https://github.com/neoeny152/ninjaupdatereport' target='_blank'>GitHub</a></div><h2>Generated on: $(Get-Date)</h2>")
+        [void]$htmlBuilder.AppendLine("<div class='header-container'><h1>Monthly Patch Compliance Report</h1><a href='https://github.com/neoeny152/ninjapatchreport' target='_blank'>GitHub</a></div><h2>Generated on: $(Get-Date)</h2>")
         
         [void]$htmlBuilder.AppendLine("<div class='summary-section'><h2>Workstation Summary</h2><div class='summary-container'><div class='summary-box' style='background-color:$wsComplianceColor'><div class='value'>$($WorkstationDeviceStats.Compliance)%</div><div class='label'>Compliance</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.Total)</div><div class='label'>Total Machines</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.Compliant)</div><div class='label'>Compliant</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.NonCompliant)</div><div class='label'>Non-Compliant</div></div></div></div>")
         
