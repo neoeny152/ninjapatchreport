@@ -20,7 +20,7 @@ $inactiveDeviceThresholdDays = 30
 
 # To save a copy of the reports to a network share, uncomment the line below
 # and replace the path with your desired network location.
-# $fileSharePath = "\\fs1\#fs1\Deploy\PatchReports"
+# $fileSharePath = "\\yourfileserver\PatchReports"
 
 # ★★★ END CONFIGURATION ★★★
 
