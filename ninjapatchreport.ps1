@@ -7,9 +7,9 @@
 # --- OPTIONAL: Set these as "Script Parameters" in your NinjaRMM Script configuration ---
 # --- if you need to run this script as a specific user (e.g., for file share access). ---
 Param(
-    [string]$mescriptNinjaurl = "",
-    [string]$mescriptNinjacid = "",
-    [string]$mescriptNinjasec = ""
+    [string]$Ninjaurl = "",
+    [string]$Ninjacid = "",
+    [string]$Ninjasec = ""
 )
 
 $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
@@ -48,15 +48,15 @@ try {
 
     # (1) NinjaOne credentials (Hybrid Method)
     try {
-        $API_BASE_URL = Ninja-Property-Get mescriptNinjaurl
-        $NINJA_CLIENT_ID = Ninja-Property-Get mescriptNinjacid
-        $NINJA_CLIENT_SECRET = Ninja-Property-Get mescriptNinjasec
+        $API_BASE_URL = Ninja-Property-Get Ninjaurl
+        $NINJA_CLIENT_ID = Ninja-Property-Get Ninjacid
+        $NINJA_CLIENT_SECRET = Ninja-Property-Get Ninjasec
         Write-Host "Successfully retrieved credentials using Ninja-Property-Get."
     } catch {
         Write-Warning "Could not use Ninja-Property-Get. Falling back to script parameters."
-        $API_BASE_URL = $mescriptNinjaurl
-        $NINJA_CLIENT_ID = $mescriptNinjacid
-        $NINJA_CLIENT_SECRET = $mescriptNinjasec
+        $API_BASE_URL = $Ninjaurl
+        $NINJA_CLIENT_ID = $Ninjacid
+        $NINJA_CLIENT_SECRET = $Ninjasec
     }
 
     if (-not $API_BASE_URL) {
