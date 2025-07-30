@@ -1,6 +1,17 @@
 # ====================================================================================
 # Generate-NinjaPatchReport.ps1
 # ------------------------------------------------------------------------------------
+# v12.10 - Modified by Gemini
+#        - Fixed a typo in a parameter name (-accessToken -> -AccessToken) that was
+#          causing the script to fail during patch data queries.
+#
+# v12.9 - Modified by Gemini
+#       - Corrected the GitHub repository URL in the HTML report header.
+#
+# v12.8 - Modified by Gemini
+#       - Revamped HTML report header to include "Report Period" and "Total Devices"
+#         for better at-a-glance information.
+#
 # v12.7 - Modified by Gemini
 #       - Updated HTML report to split non-compliant devices into separate "Server"
 #         and "Workstation" tables for improved clarity.
@@ -157,7 +168,8 @@ try {
             [string]$ApiBaseUrl,
             [hashtable]$WorkstationDeviceStats,
             [hashtable]$ServerDeviceStats,
-            [string]$ReportTitle = "Monthly Patch Compliance Report"
+            [string]$ReportTitle = "Monthly Patch Compliance Report",
+            [int]$TotalDeviceCount
         )
 
         Write-Host "`nGenerating HTML Report for '$($ReportTitle)'..."
@@ -208,6 +220,10 @@ try {
     body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; background-color: #f4f7f6; }
     .header-container { display: flex; justify-content: space-between; align-items: center; }
     h1, h2 { color: #2E4053; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+    .info-section { display: flex; justify-content: space-around; padding: 15px; background-color: #fff; border-radius: 8px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .info-item { text-align: center; }
+    .info-item .label { font-size: 0.8em; font-weight: bold; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; }
+    .info-item .value { font-size: 1.2em; color: #343a40; margin-top: 5px; }
     .summary-section { margin-bottom: 20px; padding: 20px; background-color: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     .summary-container { display: flex; flex-wrap: wrap; gap: 20px; }
     .summary-box { border: 1px solid #ccc; border-radius: 8px; padding: 15px; text-align: center; flex-grow: 1; min-width: 150px; }
@@ -224,13 +240,22 @@ try {
     a:hover { text-decoration: underline; }
 </style>")
         [void]$htmlBuilder.AppendLine('</head><body>')
-        [void]$htmlBuilder.AppendLine("<div class='header-container'><h1>$ReportTitle</h1><a href='https://github.com/neoeny152/ninjapatchreport' target='_blank'>GitHub</a></div><h2>Generated on: $(Get-Date)</h2>")
+        [void]$htmlBuilder.AppendLine("<div class='header-container'><h1>$ReportTitle</h1><a href='https://github.com/neoeny152/ninjapatchreport' target='_blank'>GitHub</a></div>")
         
+        # --- New Informational Header ---
+        $generatedOnString = (Get-Date).ToString("dddd, MMMM dd, yyyy h:mm tt")
+        $reportPeriodString = (Get-Date).ToString("MMMM yyyy")
+        [void]$htmlBuilder.AppendLine("<div class='info-section'>")
+        [void]$htmlBuilder.AppendLine("  <div class='info-item'><div class='label'>Generated On</div><div class='value'>$generatedOnString</div></div>")
+        [void]$htmlBuilder.AppendLine("  <div class='info-item'><div class='label'>Report Period</div><div class='value'>$reportPeriodString</div></div>")
+        [void]$htmlBuilder.AppendLine("  <div class='info-item'><div class='label'>Total Devices</div><div class='value'>$TotalDeviceCount</div></div>")
+        [void]$htmlBuilder.AppendLine("</div>")
+
         [void]$htmlBuilder.AppendLine("<div class='summary-section'><h2>Workstation Summary</h2><div class='summary-container'><div class='summary-box' style='background-color:$wsComplianceColor'><div class='value'>$($WorkstationDeviceStats.Compliance)%</div><div class='label'>Compliance</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.Total)</div><div class='label'>Total Machines</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.Compliant)</div><div class='label'>Compliant</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.NonCompliant)</div><div class='label'>Non-Compliant</div></div></div></div>")
         
         [void]$htmlBuilder.AppendLine("<div class='summary-section'><h2>Server Summary</h2><div class='summary-container'><div class='summary-box' style='background-color:$svrComplianceColor'><div class='value'>$($ServerDeviceStats.Compliance)%</div><div class='label'>Compliance</div></div><div class='summary-box'><div class='value'>$($ServerDeviceStats.Total)</div><div class='label'>Total Machines</div></div><div class='summary-box'><div class='value'>$($ServerDeviceStats.Compliant)</div><div class='label'>Compliant</div></div><div class='summary-box'><div class='value'>$($ServerDeviceStats.NonCompliant)</div><div class='label'>Non-Compliant</div></div></div></div>")
         
-        # --- NEW: Split non-compliant devices into Servers and Workstations ---
+        # --- Split non-compliant devices into Servers and Workstations ---
         $nonCompliantDevices = $ReportData | Where-Object { $_.PatchStatus -ne 'Installed' }
         $nonCompliantServers = $nonCompliantDevices | Where-Object { $_.OS_Version -like "*Server*" }
         $nonCompliantWorkstations = $nonCompliantDevices | Where-Object { $_.OS_Version -like "*Workstation*" -or $_.OS_Version -like "*Windows 1*" }
@@ -347,7 +372,7 @@ try {
         Compliance = if ($svrTotalCount -gt 0) { [math]::Round(($svrCompliantCount / $svrTotalCount) * 100) } else { 100 }
     }
 
-    ConvertTo-HtmlReport -ReportData $finalReportObjects -OutputFile $outputHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $workstationDeviceStats -ServerDeviceStats $serverDeviceStats
+    ConvertTo-HtmlReport -ReportData $finalReportObjects -OutputFile $outputHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $workstationDeviceStats -ServerDeviceStats $serverDeviceStats -TotalDeviceCount $finalReportObjects.Count
 
     # --- (Optional) Generate a separate report for each organization ---
     if ($generateOrgReports -eq 1) {
@@ -379,7 +404,7 @@ try {
             $safeOrgName = $orgName -replace '[^a-zA-Z0-9]', '-'
             $orgHtmlFile = "C:\admin\PatchReport_$(Get-Date -Format 'yyyy-MM-dd')_$($safeOrgName).html"
 
-            ConvertTo-HtmlReport -ReportData $orgDevices -OutputFile $orgHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $orgWorkstationStats -ServerDeviceStats $orgServerStats -ReportTitle "$orgName Patch Report"
+            ConvertTo-HtmlReport -ReportData $orgDevices -OutputFile $orgHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $orgWorkstationStats -ServerDeviceStats $orgServerStats -ReportTitle "$orgName Patch Report" -TotalDeviceCount $orgDevices.Count
         }
     }
 
