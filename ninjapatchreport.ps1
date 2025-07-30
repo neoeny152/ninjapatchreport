@@ -1,26 +1,24 @@
 # ====================================================================================
 # Generate-NinjaPatchReport.ps1
 # ------------------------------------------------------------------------------------
+# v12.7 - Modified by Gemini
+#       - Updated HTML report to split non-compliant devices into separate "Server"
+#         and "Workstation" tables for improved clarity.
 # ====================================================================================
 
 # ★★★ SCRIPT CONFIGURATION ★★★
-# --- OPTIONAL: Set these as "Script Parameters" in your NinjaRMM Script configuration ---
-# --- if you need to run this script as a specific user (e.g., for file share access). ---
-Param(
-    [string]$Ninjaurl = "",
-    [string]$Ninjacid = "",
-    [string]$Ninjasec = ""
-)
-
 $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
 $outputCsvFile = "C:\admin\PatchReport_$timestamp.csv"
 $outputHtmlFile = "C:\admin\PatchReport_$timestamp.html"
 $logFile = "C:\admin\PatchReportLog_$timestamp.log"
 $inactiveDeviceThresholdDays = 30
 
+# Set to 1 to generate a separate HTML report for each organization, 0 to disable.
+$generateOrgReports = 1
+
 # To save a copy of the reports to a network share, uncomment the line below
 # and replace the path with your desired network location.
-# $fileSharePath = "\\yourfileserver\PatchReports"
+# $fileSharePath = "\\YourServer\YourShare\PatchReports"
 
 # ★★★ END CONFIGURATION ★★★
 
@@ -46,24 +44,19 @@ try {
     Write-Host "Full log will be saved to: $logFile"
     Write-Host "================================================="
 
-    # (1) NinjaOne credentials (Hybrid Method)
-    try {
-        $API_BASE_URL = Ninja-Property-Get Ninjaurl
-        $NINJA_CLIENT_ID = Ninja-Property-Get Ninjacid
-        $NINJA_CLIENT_SECRET = Ninja-Property-Get Ninjasec
-        Write-Host "Successfully retrieved credentials using Ninja-Property-Get."
-    } catch {
-        Write-Warning "Could not use Ninja-Property-Get. Falling back to script parameters."
-        $API_BASE_URL = $Ninjaurl
-        $NINJA_CLIENT_ID = $Ninjacid
-        $NINJA_CLIENT_SECRET = $Ninjasec
+    # (1) NinjaOne credentials (pull from your NinjaOne “Secret Custom Fields”)
+    $API_INSTANCE        = Ninja-Property-Get ninjaoneInstance
+    
+    # --- Smart URL Handling ---
+    if ($API_INSTANCE.StartsWith("http")) {
+        $API_BASE_URL = $API_INSTANCE
+    } else {
+        $API_BASE_URL = "https://$($API_INSTANCE)"
     }
 
-    if (-not $API_BASE_URL) {
-        throw "NinjaOne Base URL is empty. Please set either the custom fields or the script parameters."
-    }
-    
-    $NINJA_SCOPE = "monitoring management"
+    $NINJA_CLIENT_ID     = Ninja-Property-Get ninjaoneClientId
+    $NINJA_CLIENT_SECRET = Ninja-Property-Get ninjaoneClientSecret
+    $NINJA_SCOPE         = "monitoring management"
 
     #================================================================
     # FUNCTIONS
@@ -147,7 +140,7 @@ try {
                 break 
             }
         } while ($cursorName)
-        Write-Host "  ...fetched $($allResults.Count) total patch records for status '$($Parameters.status)'."
+        Write-Host "   ...fetched $($allResults.Count) total patch records for status '$($Parameters.status)'."
         return $allResults
     }
     
@@ -163,10 +156,11 @@ try {
             [string]$OutputFile,
             [string]$ApiBaseUrl,
             [hashtable]$WorkstationDeviceStats,
-            [hashtable]$ServerDeviceStats
+            [hashtable]$ServerDeviceStats,
+            [string]$ReportTitle = "Monthly Patch Compliance Report"
         )
 
-        Write-Host "`nGenerating HTML Report..."
+        Write-Host "`nGenerating HTML Report for '$($ReportTitle)'..."
         
         function Get-ComplianceColor {
             param($compliance)
@@ -175,12 +169,41 @@ try {
             return "#FADBD8" # Red
         }
 
+        # Helper function to generate the HTML for a table of devices
+        function Generate-DeviceTable {
+            param(
+                [System.Text.StringBuilder]$htmlBuilder,
+                [array]$DeviceData,
+                [string]$ApiBaseUrl
+            )
+            $htmlBuilder.AppendLine('<table>')
+            $htmlBuilder.AppendLine('<thead><tr><th>Device Name</th><th>Last User</th><th>OS</th><th>Location</th><th>Status</th><th>Installed KBs (This Month)</th><th>Pending KBs</th><th>Last Contact</th><th>Uptime</th><th>Days Offline</th></tr></thead>')
+            $htmlBuilder.AppendLine('<tbody>')
+
+            foreach($device in $DeviceData){
+                $statusClass = "status-" + ($device.PatchStatus -replace ' ', '-')
+                [void]$htmlBuilder.AppendLine("<tr class='${statusClass}'>")
+                $deviceUrl = "$ApiBaseUrl/#/deviceDashboard/$($device.DeviceId)/overview"
+                [void]$htmlBuilder.Append("<td><a href='$deviceUrl' target='_blank'>$($device.DeviceName)</a></td>")
+                $uptimeText = if ($device.UptimeDays -eq "N/A") { "N/A" } else { "$($device.UptimeDays) days" }
+                $offlineText = if ($device.DaysOffline -eq 0) { "0" } else { "$($device.DaysOffline) days" }
+                [void]$htmlBuilder.Append("<td>$($device.LastUser)</td><td>$($device.OS_Version)</td><td>$($device.Location)</td><td>$($device.PatchStatus)</td>")
+                $installedKbLinks = $device.InstalledKBs | ForEach-Object { if (-not [string]::IsNullOrEmpty($_)) { $kb = $_.Trim(); "<a href='https://support.microsoft.com/kb/$($kb -replace 'KB')' target='_blank'>$kb</a>" } }
+                [void]$htmlBuilder.Append("<td>$($installedKbLinks -join ', ')</td>")
+                $pendingKbLinks = $device.PendingKBs | ForEach-Object { if (-not [string]::IsNullOrEmpty($_)) { $kb = $_.Trim(); "<a href='https://support.microsoft.com/kb/$($kb -replace 'KB')' target='_blank'>$kb</a>" } }
+                [void]$htmlBuilder.Append("<td>$($pendingKbLinks -join ', ')</td>")
+                [void]$htmlBuilder.Append("<td>$($device.LastContact)</td><td>$uptimeText</td><td>$offlineText</td></tr>")
+            }
+
+            $htmlBuilder.AppendLine('</tbody></table>')
+        }
+
         $wsComplianceColor = Get-ComplianceColor -compliance $WorkstationDeviceStats.Compliance
         $svrComplianceColor = Get-ComplianceColor -compliance $ServerDeviceStats.Compliance
 
         $htmlBuilder = [System.Text.StringBuilder]::new()
         [void]$htmlBuilder.AppendLine('<!DOCTYPE html><html><head>')
-        [void]$htmlBuilder.AppendLine('<meta charset="UTF-8"><title>Monthly Patch Compliance Report</title>')
+        [void]$htmlBuilder.AppendLine("<meta charset='UTF-8'><title>$ReportTitle</title>")
         [void]$htmlBuilder.AppendLine("<style>
     body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; background-color: #f4f7f6; }
     .header-container { display: flex; justify-content: space-between; align-items: center; }
@@ -190,7 +213,7 @@ try {
     .summary-box { border: 1px solid #ccc; border-radius: 8px; padding: 15px; text-align: center; flex-grow: 1; min-width: 150px; }
     .summary-box .value { font-size: 2.5em; font-weight: bold; }
     .summary-box .label { font-size: 1em; color: #555; }
-    table { width: 100%; border-collapse: collapse; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 30px; }
     th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
     th { background-color: #4A5568; color: white; }
     tr:nth-child(even) { background-color: #f2f2f2; }
@@ -201,34 +224,25 @@ try {
     a:hover { text-decoration: underline; }
 </style>")
         [void]$htmlBuilder.AppendLine('</head><body>')
-        [void]$htmlBuilder.AppendLine("<div class='header-container'><h1>Monthly Patch Compliance Report</h1><a href='https://github.com/neoeny152/ninjapatchreport' target='_blank'>GitHub</a></div><h2>Generated on: $(Get-Date)</h2>")
+        [void]$htmlBuilder.AppendLine("<div class='header-container'><h1>$ReportTitle</h1><a href='https://github.com/neoeny152/ninjaupdatereport' target='_blank'>GitHub</a></div><h2>Generated on: $(Get-Date)</h2>")
         
         [void]$htmlBuilder.AppendLine("<div class='summary-section'><h2>Workstation Summary</h2><div class='summary-container'><div class='summary-box' style='background-color:$wsComplianceColor'><div class='value'>$($WorkstationDeviceStats.Compliance)%</div><div class='label'>Compliance</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.Total)</div><div class='label'>Total Machines</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.Compliant)</div><div class='label'>Compliant</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.NonCompliant)</div><div class='label'>Non-Compliant</div></div></div></div>")
         
         [void]$htmlBuilder.AppendLine("<div class='summary-section'><h2>Server Summary</h2><div class='summary-container'><div class='summary-box' style='background-color:$svrComplianceColor'><div class='value'>$($ServerDeviceStats.Compliance)%</div><div class='label'>Compliance</div></div><div class='summary-box'><div class='value'>$($ServerDeviceStats.Total)</div><div class='label'>Total Machines</div></div><div class='summary-box'><div class='value'>$($ServerDeviceStats.Compliant)</div><div class='label'>Compliant</div></div><div class='summary-box'><div class='value'>$($ServerDeviceStats.NonCompliant)</div><div class='label'>Non-Compliant</div></div></div></div>")
         
-        [void]$htmlBuilder.AppendLine("<h2>Non-Compliant Devices</h2>")
-        
-        [void]$htmlBuilder.AppendLine('<table>')
-        [void]$htmlBuilder.AppendLine('<thead><tr><th>Device Name</th><th>Last User</th><th>OS</th><th>Organization</th><th>Location</th><th>Status</th><th>Installed KBs (This Month)</th><th>Pending KBs</th><th>Last Contact</th><th>Uptime</th><th>Days Offline</th></tr></thead>')
-        [void]$htmlBuilder.AppendLine('<tbody>')
+        # --- NEW: Split non-compliant devices into Servers and Workstations ---
+        $nonCompliantDevices = $ReportData | Where-Object { $_.PatchStatus -ne 'Installed' }
+        $nonCompliantServers = $nonCompliantDevices | Where-Object { $_.OS_Version -like "*Server*" }
+        $nonCompliantWorkstations = $nonCompliantDevices | Where-Object { $_.OS_Version -like "*Workstation*" -or $_.OS_Version -like "*Windows 1*" }
 
-        foreach($device in $ReportData | Where-Object { $_.PatchStatus -ne 'Installed' }){
-            $statusClass = "status-" + ($device.PatchStatus -replace ' ', '-')
-            [void]$htmlBuilder.AppendLine("<tr class='${statusClass}'>")
-            $deviceUrl = "$ApiBaseUrl/#/deviceDashboard/$($device.DeviceId)/overview"
-            [void]$htmlBuilder.Append("<td><a href='$deviceUrl' target='_blank'>$($device.DeviceName)</a></td>")
-            $uptimeText = if ($device.UptimeDays -eq "N/A") { "N/A" } else { "$($device.UptimeDays) days" }
-            $offlineText = if ($device.DaysOffline -eq 0) { "0" } else { "$($device.DaysOffline) days" }
-            [void]$htmlBuilder.Append("<td>$($device.LastUser)</td><td>$($device.OS_Version)</td><td>$($device.Organization)</td><td>$($device.Location)</td><td>$($device.PatchStatus)</td>")
-            $installedKbLinks = $device.InstalledKBs | ForEach-Object { if (-not [string]::IsNullOrEmpty($_)) { $kb = $_.Trim(); "<a href='https://support.microsoft.com/kb/$($kb -replace 'KB')' target='_blank'>$kb</a>" } }
-            [void]$htmlBuilder.Append("<td>$($installedKbLinks -join ', ')</td>")
-            $pendingKbLinks = $device.PendingKBs | ForEach-Object { if (-not [string]::IsNullOrEmpty($_)) { $kb = $_.Trim(); "<a href='https://support.microsoft.com/kb/$($kb -replace 'KB')' target='_blank'>$kb</a>" } }
-            [void]$htmlBuilder.Append("<td>$($pendingKbLinks -join ', ')</td>")
-            [void]$htmlBuilder.Append("<td>$($device.LastContact)</td><td>$uptimeText</td><td>$offlineText</td></tr>")
-        }
+        # Generate Server Table
+        [void]$htmlBuilder.AppendLine("<h2>Non-Compliant Servers</h2>")
+        Generate-DeviceTable -htmlBuilder $htmlBuilder -DeviceData $nonCompliantServers -ApiBaseUrl $ApiBaseUrl
 
-        [void]$htmlBuilder.AppendLine('</tbody></table>')
+        # Generate Workstation Table
+        [void]$htmlBuilder.AppendLine("<h2>Non-Compliant Workstations</h2>")
+        Generate-DeviceTable -htmlBuilder $htmlBuilder -DeviceData $nonCompliantWorkstations -ApiBaseUrl $ApiBaseUrl
+
         [void]$htmlBuilder.AppendLine('</body></html>')
         
         $htmlBuilder.ToString() | Out-File -FilePath $OutputFile -Force
@@ -311,6 +325,7 @@ try {
     $statusSortOrder = @{ 'Failed' = 1; 'Pending Reboot' = 2; 'Not Patched' = 3; 'Offline' = 4; 'Installed' = 5 }
     $finalReportObjects = $finalReportObjects | Sort-Object @{Expression = { $_.DaysOffline }}, @{Expression = { $statusSortOrder[$_.PatchStatus] }}, DeviceName
     
+    # --- Generate the main, consolidated report ---
     $workstations = $finalReportObjects | Where-Object { $_.OS_Version -like "*Workstation*" -or $_.OS_Version -like "*Windows 1*" }
     $servers = $finalReportObjects | Where-Object { $_.OS_Version -like "*Server*" }
     
@@ -334,6 +349,41 @@ try {
 
     ConvertTo-HtmlReport -ReportData $finalReportObjects -OutputFile $outputHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $workstationDeviceStats -ServerDeviceStats $serverDeviceStats
 
+    # --- (Optional) Generate a separate report for each organization ---
+    if ($generateOrgReports -eq 1) {
+        $uniqueOrgs = $finalReportObjects.Organization | Select-Object -Unique
+        foreach ($orgName in $uniqueOrgs) {
+            $orgDevices = $finalReportObjects | Where-Object { $_.Organization -eq $orgName }
+            
+            $orgWorkstations = $orgDevices | Where-Object { $_.OS_Version -like "*Workstation*" -or $_.OS_Version -like "*Windows 1*" }
+            $orgServers = $orgDevices | Where-Object { $_.OS_Version -like "*Server*" }
+
+            $orgWsCompliantCount = ($orgWorkstations | Where-Object { $_.PatchStatus -eq 'Installed' }).Count
+            $orgWsTotalCount = $orgWorkstations.Count
+            $orgWorkstationStats = @{
+                Total = $orgWsTotalCount
+                Compliant = $orgWsCompliantCount
+                NonCompliant = $orgWsTotalCount - $orgWsCompliantCount
+                Compliance = if ($orgWsTotalCount -gt 0) { [math]::Round(($orgWsCompliantCount / $orgWsTotalCount) * 100) } else { 100 }
+            }
+
+            $orgSvrCompliantCount = ($orgServers | Where-Object { $_.PatchStatus -eq 'Installed' }).Count
+            $orgSvrTotalCount = $orgServers.Count
+            $orgServerStats = @{
+                Total = $orgSvrTotalCount
+                Compliant = $orgSvrCompliantCount
+                NonCompliant = $orgSvrTotalCount - $orgSvrCompliantCount
+                Compliance = if ($orgSvrTotalCount -gt 0) { [math]::Round(($orgSvrCompliantCount / $orgSvrTotalCount) * 100) } else { 100 }
+            }
+            
+            $safeOrgName = $orgName -replace '[^a-zA-Z0-9]', '-'
+            $orgHtmlFile = "C:\admin\PatchReport_$(Get-Date -Format 'yyyy-MM-dd')_$($safeOrgName).html"
+
+            ConvertTo-HtmlReport -ReportData $orgDevices -OutputFile $orgHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $orgWorkstationStats -ServerDeviceStats $orgServerStats -ReportTitle "$orgName Patch Report"
+        }
+    }
+
+    # --- Export full data to CSV ---
     $csvReportObjects = $reportData.Values | ForEach-Object { # Use all data for CSV
         $clone = $_ | Select-Object *
         $clone.InstalledKBs = $clone.InstalledKBs -join ', '
@@ -353,6 +403,15 @@ try {
             New-Item -ItemType Directory -Path $shareFolder -Force | Out-Null
             Copy-Item -Path $outputHtmlFile -Destination $shareFolder
             Copy-Item -Path $outputCsvFile -Destination $shareFolder
+            
+            if ($generateOrgReports -eq 1) {
+                $orgShareFolder = Join-Path -Path $shareFolder -ChildPath "Organizations"
+                New-Item -ItemType Directory -Path $orgShareFolder -Force | Out-Null
+                Get-ChildItem -Path "C:\admin" -Filter "PatchReport_$(Get-Date -Format 'yyyy-MM-dd')_*.html" | ForEach-Object {
+                    Copy-Item -Path $_.FullName -Destination $orgShareFolder
+                }
+            }
+
             Write-Host "✔ Reports successfully copied to share." -ForegroundColor Green
         } catch {
             Write-Warning "Failed to copy files to share: $($_.Exception.Message)"
@@ -366,7 +425,7 @@ try {
         $files = Get-ChildItem -Path "C:\admin" -Filter $type | Sort-Object CreationTime -Descending
         if ($files.Count -gt 5) {
             $files | Select-Object -Skip 5 | Remove-Item
-            Write-Host "  - Cleaned up $($files.Count - 5) old '$type' files."
+            Write-Host "   - Cleaned up $($files.Count - 5) old '$type' files."
         }
     }
     Write-Host "✔ Cleanup complete."
