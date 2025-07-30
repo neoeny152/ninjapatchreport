@@ -10,7 +10,9 @@ For security, it is critical to run this script from a dedicated and isolated ma
 
 1. **Select a Dedicated Machine**: Use a dedicated machine for running scripts that will not be used for other tasks. A Windows Server Core VM is a great choice. This machine should only be accessible to System Administrator accounts.
 2. **Create a "Scripting" Organization**: In NinjaOne, create a new organization (e.g., "Internal Scripting") to house the dedicated script runner machine. This isolates it from your client organizations.
-3. **Create a Custom Role**: Navigate to **Configuration** > **Roles**. Create a new custom role (e.g., "Script Runner Role") for your script machine.
+3. **Create a Custom Role**:
+    - Navigate to **Home** > **Administration** > **Devices** > **Roles**.
+    - Scroll to the **Windows Server** section, click the ellipsis (**...**), and select **Add** to create a new role named "Script Runner Role".
 4. **Secure Technician Permissions**: Update your technician roles to ensure only System Administrators have access to the new "Scripting" organization and the "Script Runner Role".
 5. **Assign the Machine**: Install the NinjaOne agent on your dedicated machine and move it into the new "Scripting" organization. Edit the device and assign it the "Script Runner Role".
 
@@ -20,21 +22,29 @@ For security, it is critical to run this script from a dedicated and isolated ma
 
 First, create a new API client for the script to use.
 
-- In NinjaOne, navigate to **Configuration** > **Integrations** > **API**.
-- Click **Add** and create a new **Client ID / Secret Credential**.
+- In NinjaOne, navigate to **Home** > **Administration** > **Apps** > **API**.
+- Click **\+ Add client app** and create a new credential.
 - Grant it the **Monitoring** and **Management** scopes.
 - Securely save the **Client ID** and **Client Secret** for the next steps.
 
 ### **2\. Create Role Custom Fields for Credentials**
 
-The script uses NinjaRMM's secure custom fields to access your API credentials. By creating them as **Role Custom Fields**, you ensure they are only available to the secure role you created earlier.
+The script requires NinjaOne API details stored in secure custom fields. These must be **Role Custom Fields** assigned only to your "Script Runner Role" to maintain security.
 
-- Navigate to **Configuration** > **Roles**.
+- Navigate to **Home** > **Administration** > **Devices** > **Roles**.
 - Select the **Script Runner Role** you created.
-- Go to the **Custom Fields** tab.
-- Click **Add a Field** and create the following three fields. The **Name** is used by the script and must match exactly. The **Label** is the display name you see in the UI.
+- Go to the **Device Custom Fields** tab.
+- Click **Add a Field** and create the following three fields.
+  - **Important**: The Name must match exactly, as the script uses it directly. The Label is the friendly display name you will see in the UI.
 
-| **Label (Display Name)** | **Name (Internal)** | **Type** | **Permissions** | | Ninja API URL | ninjaoneInstance | Secret Text | Technician: Editable, Automations: Read Only | | Ninja API Client ID | ninjaoneClientId | Secret Text | Technician: Editable, Automations: Read Only | | Ninja API Client Secret | ninjaoneClientSecret | Secret Text | Technician: Editable, Automations: Read Only |
+| **Label (Display Name)** | **Name (Internal)** | **Type** | **Permissions** | **Description** |
+| --- | --- | --- | --- | --- |
+| NinjaOne Instance | ninjaoneInstance | Text | Technician: Editable&lt;br&gt;Automations: Read Only&lt;br&gt;API: None | Stores the name of your NinjaOne Instance (e.g., app.ninjarmm.com or eu.ninjarmm.com) |
+| --- | --- | --- | --- | --- |
+| NinjaOne Client ID | ninjaoneClientId | Secure | Technician: Editable&lt;br&gt;Automations: Read Only&lt;br&gt;API: None | Stores the API Client ID |
+| --- | --- | --- | --- | --- |
+| NinjaOne Client Secret | ninjaoneClientSecret | Secure | Technician: Editable&lt;br&gt;Automations: Read Only&lt;br&gt;API: None | Stores the API Client Secret |
+| --- | --- | --- | --- | --- |
 
 ### **3\. Populate Credentials on the Script Runner Device**
 
@@ -44,8 +54,8 @@ The script uses NinjaRMM's secure custom fields to access your API credentials. 
 
 ### **4\. Create the Script in NinjaRMM**
 
-- Navigate to **Configuration** > **Scripting**.
-- Click **Create New Script**.
+- Navigate to **Home** > **Administration** > **Library** > **Automation**.
+- Click **\+ Add**.
 - Configure the script settings:
   - **Name**: Generate Windows Patch Report
   - **Description**: Generates a monthly patch compliance report in HTML and CSV format.
@@ -62,8 +72,12 @@ The script uses NinjaRMM's secure custom fields to access your API credentials. 
 
 ### **6\. (Optional) Configure File Share Copy**
 
-If you want the script to automatically copy the reports to a network share:
+You can configure the script to automatically save a copy of the reports to a network share.
 
-- In the script's ★★★ SCRIPT CONFIGURATION ★★★ section, uncomment the $fileSharePath variable and replace the placeholder with your actual UNC path.
-- When scheduling the script, use NinjaRMM's **"Network Credentials"** feature. Provide a user account (like a service account) in this section that has permission to write to the file share.
-- This allows the script to run as SYSTEM locally (to get the API keys) while using your specified credentials only for accessing the network share.
+**Disclaimer:** This feature is difficult to configure and should be attempted at your own risk. Because the script must run as the SYSTEM account to access the secure API credentials, it does not have inherent permissions to access network resources. Authenticating to a network share from the SYSTEM context is complex and may not work reliably in all environments.
+
+If you wish to attempt this:
+
+1. In the script's ★★★ SCRIPT CONFIGURATION ★★★ section, uncomment the $fileSharePath variable.
+2. Replace the placeholder with your UNC path (e.g., \\\\YourServer\\YourShare\\PatchReports).
+3. You will need to independently solve the network authentication challenge for the SYSTEM account on your script runner machine to access the specified path.
