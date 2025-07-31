@@ -1,20 +1,13 @@
 # ====================================================================================
 # Generate-NinjaPatchReport.ps1
 # ------------------------------------------------------------------------------------
-# v12.10 - Modified by Gemini
-#        - Fixed a typo in a parameter name (-accessToken -> -AccessToken) that was
-#          causing the script to fail during patch data queries.
+# v12.13 - Modified by Gemini
+#        - Fixed a bug where historical reports always showed the current month in the header.
+#        - Improved historical accuracy by only querying for installed/failed patches for past months.
+#        - Added disclaimers for the experimental historical reporting feature.
 #
-# v12.9 - Modified by Gemini
-#       - Corrected the GitHub repository URL in the HTML report header.
-#
-# v12.8 - Modified by Gemini
-#       - Revamped HTML report header to include "Report Period" and "Total Devices"
-#         for better at-a-glance information.
-#
-# v12.7 - Modified by Gemini
-#       - Updated HTML report to split non-compliant devices into separate "Server"
-#         and "Workstation" tables for improved clarity.
+# v12.12 - Modified by Gemini
+#        - Added logic for historical reporting and a "Patch Tuesday" warning banner.
 # ====================================================================================
 
 # ★★★ SCRIPT CONFIGURATION ★★★
@@ -25,7 +18,14 @@ $logFile = "C:\admin\PatchReportLog_$timestamp.log"
 $inactiveDeviceThresholdDays = 30
 
 # Set to 1 to generate a separate HTML report for each organization, 0 to disable.
-$generateOrgReports = 1
+$generateOrgReports = 0
+
+# --- (EXPERIMENTAL) Historical Reporting ---
+# To run a report for a specific historical month, uncomment and set the variables below.
+# NOTE: This feature is experimental and may not be fully accurate. It relies on
+# historical patch installation data available via the API.
+# $reportMonth = 6 # Example: 6 for June
+# $reportYear = 2025 # Example: 2025
 
 # To save a copy of the reports to a network share, uncomment the line below
 # and replace the path with your desired network location.
@@ -169,7 +169,9 @@ try {
             [hashtable]$WorkstationDeviceStats,
             [hashtable]$ServerDeviceStats,
             [string]$ReportTitle = "Monthly Patch Compliance Report",
-            [int]$TotalDeviceCount
+            [int]$TotalDeviceCount,
+            [datetime]$ReportDate,
+            [bool]$IsCurrentMonthReport
         )
 
         Write-Host "`nGenerating HTML Report for '$($ReportTitle)'..."
@@ -194,7 +196,9 @@ try {
 
             foreach($device in $DeviceData){
                 $statusClass = "status-" + ($device.PatchStatus -replace ' ', '-')
-                [void]$htmlBuilder.AppendLine("<tr class='${statusClass}'>")
+                # Add a data-org attribute to each row for JavaScript filtering
+                $orgNameAttribute = $device.Organization -replace "'", "&apos;"
+                [void]$htmlBuilder.AppendLine("<tr class='${statusClass}' data-org='${orgNameAttribute}'>")
                 $deviceUrl = "$ApiBaseUrl/#/deviceDashboard/$($device.DeviceId)/overview"
                 [void]$htmlBuilder.Append("<td><a href='$deviceUrl' target='_blank'>$($device.DeviceName)</a></td>")
                 $uptimeText = if ($device.UptimeDays -eq "N/A") { "N/A" } else { "$($device.UptimeDays) days" }
@@ -220,6 +224,9 @@ try {
     body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; background-color: #f4f7f6; }
     .header-container { display: flex; justify-content: space-between; align-items: center; }
     h1, h2 { color: #2E4053; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+    .warning-banner { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: center; }
+    .filter-container { padding: 10px; margin-bottom: 20px; background-color: #e9ecef; border-radius: 8px; text-align: right; }
+    #orgFilter { padding: 8px; border-radius: 5px; border: 1px solid #ccc; font-size: 1em; }
     .info-section { display: flex; justify-content: space-around; padding: 15px; background-color: #fff; border-radius: 8px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     .info-item { text-align: center; }
     .info-item .label { font-size: 0.8em; font-weight: bold; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -242,14 +249,41 @@ try {
         [void]$htmlBuilder.AppendLine('</head><body>')
         [void]$htmlBuilder.AppendLine("<div class='header-container'><h1>$ReportTitle</h1><a href='https://github.com/neoeny152/ninjapatchreport' target='_blank'>GitHub</a></div>")
         
-        # --- New Informational Header ---
+        # --- Add Patch Tuesday Warning if applicable ---
+        if ($IsCurrentMonthReport) {
+            $firstDay = $ReportDate.AddDays(-($ReportDate.Day - 1))
+            $firstTuesday = $firstDay
+            while ($firstTuesday.DayOfWeek -ne 'Tuesday') { $firstTuesday = $firstTuesday.AddDays(1) }
+            $secondTuesday = $firstTuesday.AddDays(7)
+
+            if ((Get-Date) -lt $secondTuesday) {
+                [void]$htmlBuilder.AppendLine("<div class='warning-banner'><b>Note:</b> This report is for the current month and is being run before the second Tuesday ('Patch Tuesday'). Compliance data may not be fully representative until after this month's patches are released and deployed.</div>")
+            }
+        }
+
+        # --- Informational Header ---
         $generatedOnString = (Get-Date).ToString("dddd, MMMM dd, yyyy h:mm tt")
-        $reportPeriodString = (Get-Date).ToString("MMMM yyyy")
+        $reportPeriodString = $ReportDate.ToString("MMMM yyyy")
         [void]$htmlBuilder.AppendLine("<div class='info-section'>")
         [void]$htmlBuilder.AppendLine("  <div class='info-item'><div class='label'>Generated On</div><div class='value'>$generatedOnString</div></div>")
         [void]$htmlBuilder.AppendLine("  <div class='info-item'><div class='label'>Report Period</div><div class='value'>$reportPeriodString</div></div>")
         [void]$htmlBuilder.AppendLine("  <div class='info-item'><div class='label'>Total Devices</div><div class='value'>$TotalDeviceCount</div></div>")
         [void]$htmlBuilder.AppendLine("</div>")
+
+        # --- Organization Filter Dropdown ---
+        $uniqueOrgs = $ReportData.Organization | Sort-Object -Unique
+        if ($uniqueOrgs.Count -gt 1) {
+            [void]$htmlBuilder.AppendLine("<div class='filter-container'>")
+            [void]$htmlBuilder.AppendLine("  <label for='orgFilter'>Filter by Organization: </label>")
+            [void]$htmlBuilder.AppendLine("  <select id='orgFilter' name='orgFilter'>")
+            [void]$htmlBuilder.AppendLine("    <option value='all'>All Organizations</option>")
+            foreach ($org in $uniqueOrgs) {
+                $orgNameAttribute = $org -replace "'", "&apos;"
+                [void]$htmlBuilder.AppendLine("    <option value='${orgNameAttribute}'>$($org)</option>")
+            }
+            [void]$htmlBuilder.AppendLine("  </select>")
+            [void]$htmlBuilder.AppendLine("</div>")
+        }
 
         [void]$htmlBuilder.AppendLine("<div class='summary-section'><h2>Workstation Summary</h2><div class='summary-container'><div class='summary-box' style='background-color:$wsComplianceColor'><div class='value'>$($WorkstationDeviceStats.Compliance)%</div><div class='label'>Compliance</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.Total)</div><div class='label'>Total Machines</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.Compliant)</div><div class='label'>Compliant</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.NonCompliant)</div><div class='label'>Non-Compliant</div></div></div></div>")
         
@@ -261,12 +295,59 @@ try {
         $nonCompliantWorkstations = $nonCompliantDevices | Where-Object { $_.OS_Version -like "*Workstation*" -or $_.OS_Version -like "*Windows 1*" }
 
         # Generate Server Table
+        [void]$htmlBuilder.AppendLine("<div id='server-table-container'>")
         [void]$htmlBuilder.AppendLine("<h2>Non-Compliant Servers</h2>")
         Generate-DeviceTable -htmlBuilder $htmlBuilder -DeviceData $nonCompliantServers -ApiBaseUrl $ApiBaseUrl
+        [void]$htmlBuilder.AppendLine("</div>")
 
         # Generate Workstation Table
+        [void]$htmlBuilder.AppendLine("<div id='workstation-table-container'>")
         [void]$htmlBuilder.AppendLine("<h2>Non-Compliant Workstations</h2>")
         Generate-DeviceTable -htmlBuilder $htmlBuilder -DeviceData $nonCompliantWorkstations -ApiBaseUrl $ApiBaseUrl
+        [void]$htmlBuilder.AppendLine("</div>")
+
+        # --- JavaScript for Filtering ---
+        [void]$htmlBuilder.AppendLine("<script>
+    const orgFilter = document.getElementById('orgFilter');
+    if (orgFilter) {
+        orgFilter.addEventListener('change', function() {
+            const selectedOrg = this.value;
+            
+            filterTable('server-table-container', selectedOrg);
+            filterTable('workstation-table-container', selectedOrg);
+        });
+    }
+
+    function filterTable(containerId, selectedOrg) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+
+        const table = container.querySelector('table');
+        if (!table) return;
+
+        const rows = table.getElementsByTagName('tr');
+        let visibleRows = 0;
+
+        for (let i = 1; i < rows.length; i++) { // Start at 1 to skip header row
+            const row = rows[i];
+            const rowOrg = row.getAttribute('data-org');
+            
+            if (selectedOrg === 'all' || rowOrg === selectedOrg) {
+                row.style.display = '';
+                visibleRows++;
+            } else {
+                row.style.display = 'none';
+            }
+        }
+        
+        // Hide the entire container (header and table) if no rows are visible
+        if (visibleRows === 0) {
+            container.style.display = 'none';
+        } else {
+            container.style.display = '';
+        }
+    }
+</script>")
 
         [void]$htmlBuilder.AppendLine('</body></html>')
         
@@ -277,6 +358,20 @@ try {
     #================================================================
     # SCRIPT EXECUTION
     #================================================================
+
+    # --- Determine Report Date Range ---
+    $isCurrentMonthReport = $false
+    if ($PSBoundParameters.ContainsKey('reportMonth') -and $PSBoundParameters.ContainsKey('reportYear')) {
+        Write-Host "Historical report requested for $reportMonth/$reportYear." -ForegroundColor Yellow
+        $reportStartDate = Get-Date -Year $reportYear -Month $reportMonth -Day 1 -Hour 0 -Minute 0 -Second 0
+    } else {
+        Write-Host "Defaulting to current month for report." -ForegroundColor Green
+        $reportStartDate = Get-Date -Day 1 -Hour 0 -Minute 0 -Second 0
+        $isCurrentMonthReport = $true
+    }
+    $reportEndDate = $reportStartDate.AddMonths(1)
+    $startDateString = $reportStartDate.ToString('yyyy-MM-dd')
+    $endDateString = $reportEndDate.ToString('yyyy-MM-dd')
 
     $accessToken = Get-AccessToken_Ninja -ApiBaseUrl $API_BASE_URL -ClientId $NINJA_CLIENT_ID -ClientSecret $NINJA_CLIENT_SECRET -Scope $NINJA_SCOPE
     
@@ -321,21 +416,23 @@ try {
         }
     }
     
-    $firstDayOfMonth = Get-Date -Day 1
-    $startDateString = $firstDayOfMonth.ToString('yyyy-MM-dd')
-    Write-Host "`nQuerying patch data for the current month (since $startDateString)..."
+    Write-Host "`nQuerying patch data for the period starting $startDateString..."
     
     $patchNameFilter = { $_.name -like "*Cumulative Update*" -or $_.name -like "*.NET Framework*" }
 
-    $installedPatches = Query-PatchData -AccessToken $accessToken -ApiBaseUrl $API_BASE_URL -Endpoint '/v2/queries/os-patch-installs' -Parameters @{status = 'INSTALLED'; installedAfter = $startDateString} | Where-Object $patchNameFilter
-    $failedPatches = Query-PatchData -AccessToken $accessToken -ApiBaseUrl $API_BASE_URL -Endpoint '/v2/queries/os-patch-installs' -Parameters @{status = 'FAILED'; installedAfter = $startDateString} | Where-Object $patchNameFilter
-    $pendingPatches = Query-PatchData -AccessToken $accessToken -ApiBaseUrl $API_BASE_URL -Endpoint '/v2/queries/os-patches' -Parameters @{status = 'PENDING'} | Where-Object $patchNameFilter
-    $approvedPatches = Query-PatchData -AccessToken $accessToken -ApiBaseUrl $API_BASE_URL -Endpoint '/v2/queries/os-patches' -Parameters @{status = 'APPROVED'} | Where-Object $patchNameFilter
+    $installedPatches = Query-PatchData -AccessToken $accessToken -ApiBaseUrl $API_BASE_URL -Endpoint '/v2/queries/os-patch-installs' -Parameters @{status = 'INSTALLED'; installedAfter = $startDateString; installedBefore = $endDateString} | Where-Object $patchNameFilter
+    $failedPatches = Query-PatchData -AccessToken $accessToken -ApiBaseUrl $API_BASE_URL -Endpoint '/v2/queries/os-patch-installs' -Parameters @{status = 'FAILED'; installedAfter = $startDateString; installedBefore = $endDateString} | Where-Object $patchNameFilter
+    
+    # Only query for pending/approved patches for the current month's report
+    if ($isCurrentMonthReport) {
+        $pendingPatches = Query-PatchData -AccessToken $accessToken -ApiBaseUrl $API_BASE_URL -Endpoint '/v2/queries/os-patches' -Parameters @{status = 'PENDING'} | Where-Object $patchNameFilter
+        $approvedPatches = Query-PatchData -AccessToken $accessToken -ApiBaseUrl $API_BASE_URL -Endpoint '/v2/queries/os-patches' -Parameters @{status = 'APPROVED'} | Where-Object $patchNameFilter
+        foreach ($patch in $pendingPatches) { if ($reportData.ContainsKey($patch.deviceId)) { $reportData[$patch.deviceId].PendingKBs.Add($patch.kbNumber) } }
+        foreach ($patch in $approvedPatches) { if ($reportData.ContainsKey($patch.deviceId)) { $reportData[$patch.deviceId].PendingKBs.Add($patch.kbNumber) } }
+    }
 
     foreach ($patch in $failedPatches) { if ($reportData.ContainsKey($patch.deviceId)) { $reportData[$patch.deviceId].PatchStatus = "Failed" } }
     foreach ($patch in $installedPatches) { if ($reportData.ContainsKey($patch.deviceId)) { $reportData[$patch.deviceId].InstalledKBs.Add($patch.kbNumber); if ($reportData[$patch.deviceId].PatchStatus -ne 'Failed') { $reportData[$patch.deviceId].PatchStatus = "Installed" } } }
-    foreach ($patch in $pendingPatches) { if ($reportData.ContainsKey($patch.deviceId)) { $reportData[$patch.deviceId].PendingKBs.Add($patch.kbNumber) } }
-    foreach ($patch in $approvedPatches) { if ($reportData.ContainsKey($patch.deviceId)) { $reportData[$patch.deviceId].PendingKBs.Add($patch.kbNumber) } }
 
     $allProcessedDevices = $reportData.Values | ForEach-Object {
         if ($_.PatchStatus -eq 'Installed' -and $_.NeedsReboot) {
@@ -372,7 +469,7 @@ try {
         Compliance = if ($svrTotalCount -gt 0) { [math]::Round(($svrCompliantCount / $svrTotalCount) * 100) } else { 100 }
     }
 
-    ConvertTo-HtmlReport -ReportData $finalReportObjects -OutputFile $outputHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $workstationDeviceStats -ServerDeviceStats $serverDeviceStats -TotalDeviceCount $finalReportObjects.Count
+    ConvertTo-HtmlReport -ReportData $finalReportObjects -OutputFile $outputHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $workstationDeviceStats -ServerDeviceStats $serverDeviceStats -TotalDeviceCount $finalReportObjects.Count -ReportDate $reportStartDate -IsCurrentMonthReport $isCurrentMonthReport
 
     # --- (Optional) Generate a separate report for each organization ---
     if ($generateOrgReports -eq 1) {
@@ -404,7 +501,7 @@ try {
             $safeOrgName = $orgName -replace '[^a-zA-Z0-9]', '-'
             $orgHtmlFile = "C:\admin\PatchReport_$(Get-Date -Format 'yyyy-MM-dd')_$($safeOrgName).html"
 
-            ConvertTo-HtmlReport -ReportData $orgDevices -OutputFile $orgHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $orgWorkstationStats -ServerDeviceStats $orgServerStats -ReportTitle "$orgName Patch Report" -TotalDeviceCount $orgDevices.Count
+            ConvertTo-HtmlReport -ReportData $orgDevices -OutputFile $orgHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $orgWorkstationStats -ServerDeviceStats $orgServerStats -ReportTitle "$orgName Patch Report" -TotalDeviceCount $orgDevices.Count -ReportDate $reportStartDate -IsCurrentMonthReport $isCurrentMonthReport
         }
     }
 
