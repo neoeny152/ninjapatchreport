@@ -1,24 +1,26 @@
 # ====================================================================================
 # Generate-NinjaPatchReport.ps1
 # ------------------------------------------------------------------------------------
-# v12.13 - Modified by Gemini
-#        - Fixed a bug where historical reports always showed the current month in the header.
-#        - Improved historical accuracy by only querying for installed/failed patches for past months.
-#        - Added disclaimers for the experimental historical reporting feature.
+# v12.15 - Modified by Gemini
+#        - Reports are now saved into a timestamped subfolder within C:\admin for better organization.
+#        - Fixed a bug where the cleanup logic was deleting individual organization reports
+#          instead of entire report sets. Cleanup now correctly removes old folders.
 #
-# v12.12 - Modified by Gemini
-#        - Added logic for historical reporting and a "Patch Tuesday" warning banner.
+# v12.14 - Modified by Gemini
+#        - Fixed a critical bug in the historical reporting logic.
 # ====================================================================================
 
 # ★★★ SCRIPT CONFIGURATION ★★★
 $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
-$outputCsvFile = "C:\admin\PatchReport_$timestamp.csv"
-$outputHtmlFile = "C:\admin\PatchReport_$timestamp.html"
-$logFile = "C:\admin\PatchReportLog_$timestamp.log"
+# --- New: Output will be saved in a timestamped subfolder ---
+$outputDir = "C:\admin\PatchReport_$timestamp"
+$outputCsvFile = Join-Path -Path $outputDir -ChildPath "PatchReport.csv"
+$outputHtmlFile = Join-Path -Path $outputDir -ChildPath "PatchReport.html"
+$logFile = "C:\admin\PatchReportLog_$timestamp.log" # Logs remain in the root for easy access
 $inactiveDeviceThresholdDays = 30
 
 # Set to 1 to generate a separate HTML report for each organization, 0 to disable.
-$generateOrgReports = 0
+$generateOrgReports = 1
 
 # --- (EXPERIMENTAL) Historical Reporting ---
 # To run a report for a specific historical month, uncomment and set the variables below.
@@ -38,10 +40,11 @@ $generateOrgReports = 0
 # SCRIPT BODY
 # ================================================================
 
-# Ensure the C:\admin folder exists for logs and reports
+# Ensure the C:\admin folder and the new output directory exist
 if (!(Test-Path -Path "C:\admin")) {
     New-Item -ItemType Directory -Path "C:\admin" | Out-Null
 }
+New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 
 # Start logging all actions to a transcript file
 Start-Transcript -Path $logFile
@@ -50,8 +53,7 @@ try {
     # --- Announce Start ---
     Write-Host "================================================="
     Write-Host "Starting NinjaOne Patch Report Generation"
-    Write-Host "Report CSV will be saved to: $outputCsvFile"
-    Write-Host "Report HTML will be saved to: $outputHtmlFile"
+    Write-Host "Reports will be saved to: $outputDir"
     Write-Host "Full log will be saved to: $logFile"
     Write-Host "================================================="
 
@@ -361,6 +363,7 @@ try {
 
     # --- Determine Report Date Range ---
     $isCurrentMonthReport = $false
+    # Correctly check if the optional variables have been set by the user
     if ($PSBoundParameters.ContainsKey('reportMonth') -and $PSBoundParameters.ContainsKey('reportYear')) {
         Write-Host "Historical report requested for $reportMonth/$reportYear." -ForegroundColor Yellow
         $reportStartDate = Get-Date -Year $reportYear -Month $reportMonth -Day 1 -Hour 0 -Minute 0 -Second 0
@@ -499,7 +502,7 @@ try {
             }
             
             $safeOrgName = $orgName -replace '[^a-zA-Z0-9]', '-'
-            $orgHtmlFile = "C:\admin\PatchReport_$(Get-Date -Format 'yyyy-MM-dd')_$($safeOrgName).html"
+            $orgHtmlFile = Join-Path -Path $outputDir -ChildPath "PatchReport_$($safeOrgName).html"
 
             ConvertTo-HtmlReport -ReportData $orgDevices -OutputFile $orgHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $orgWorkstationStats -ServerDeviceStats $orgServerStats -ReportTitle "$orgName Patch Report" -TotalDeviceCount $orgDevices.Count -ReportDate $reportStartDate -IsCurrentMonthReport $isCurrentMonthReport
         }
@@ -521,19 +524,8 @@ try {
     if ($fileSharePath -and (Test-Path -Path $fileSharePath)) {
         Write-Host "`nAttempting to copy reports to file share: $fileSharePath"
         try {
-            $shareFolder = Join-Path -Path $fileSharePath -ChildPath $timestamp
-            New-Item -ItemType Directory -Path $shareFolder -Force | Out-Null
-            Copy-Item -Path $outputHtmlFile -Destination $shareFolder
-            Copy-Item -Path $outputCsvFile -Destination $shareFolder
-            
-            if ($generateOrgReports -eq 1) {
-                $orgShareFolder = Join-Path -Path $shareFolder -ChildPath "Organizations"
-                New-Item -ItemType Directory -Path $orgShareFolder -Force | Out-Null
-                Get-ChildItem -Path "C:\admin" -Filter "PatchReport_$(Get-Date -Format 'yyyy-MM-dd')_*.html" | ForEach-Object {
-                    Copy-Item -Path $_.FullName -Destination $orgShareFolder
-                }
-            }
-
+            # Copy the entire timestamped folder
+            Copy-Item -Path $outputDir -Destination $fileSharePath -Recurse -Force
             Write-Host "✔ Reports successfully copied to share." -ForegroundColor Green
         } catch {
             Write-Warning "Failed to copy files to share: $($_.Exception.Message)"
@@ -542,13 +534,19 @@ try {
 
     # --- Cleanup old files in C:\admin ---
     Write-Host "`nCleaning up old report files..."
-    $fileTypes = @("PatchReport_*.html", "PatchReport_*.csv", "PatchReportLog_*.log")
-    foreach ($type in $fileTypes) {
-        $files = Get-ChildItem -Path "C:\admin" -Filter $type | Sort-Object CreationTime -Descending
-        if ($files.Count -gt 5) {
-            $files | Select-Object -Skip 5 | Remove-Item
-            Write-Host "   - Cleaned up $($files.Count - 5) old '$type' files."
-        }
+    # Clean up report folders
+    $reportFolders = Get-ChildItem -Path "C:\admin" -Directory -Filter "PatchReport_*" | Sort-Object CreationTime -Descending
+    if ($reportFolders.Count -gt 5) {
+        $foldersToClean = $reportFolders | Select-Object -Skip 5
+        $foldersToClean | Remove-Item -Recurse -Force
+        Write-Host "   - Cleaned up $($foldersToClean.Count) old report folders."
+    }
+    # Clean up log files
+    $logFiles = Get-ChildItem -Path "C:\admin" -Filter "PatchReportLog_*.log" | Sort-Object CreationTime -Descending
+    if ($logFiles.Count -gt 5) {
+        $logsToClean = $logFiles | Select-Object -Skip 5
+        $logsToClean | Remove-Item -Force
+        Write-Host "   - Cleaned up $($logsToClean.Count) old log files."
     }
     Write-Host "✔ Cleanup complete."
 
