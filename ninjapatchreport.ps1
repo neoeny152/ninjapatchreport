@@ -1,13 +1,14 @@
 # ====================================================================================
 # Generate-NinjaPatchReport.ps1
 # ------------------------------------------------------------------------------------
-# v12.15 - Modified by Gemini
-#        - Reports are now saved into a timestamped subfolder within C:\admin for better organization.
-#        - Fixed a bug where the cleanup logic was deleting individual organization reports
-#          instead of entire report sets. Cleanup now correctly removes old folders.
+# v12.16 - Modified by Gemini
+#        - Enhanced the interactive organization filter to dynamically update the
+#          Workstation and Server summary boxes (Compliance %, totals, etc.) in
+#          addition to the device tables.
 #
-# v12.14 - Modified by Gemini
-#        - Fixed a critical bug in the historical reporting logic.
+# v12.15 - Modified by Gemini
+#        - Reports are now saved into timestamped subfolders for better organization.
+#        - Fixed a bug in the cleanup logic.
 # ====================================================================================
 
 # ★★★ SCRIPT CONFIGURATION ★★★
@@ -173,7 +174,8 @@ try {
             [string]$ReportTitle = "Monthly Patch Compliance Report",
             [int]$TotalDeviceCount,
             [datetime]$ReportDate,
-            [bool]$IsCurrentMonthReport
+            [bool]$IsCurrentMonthReport,
+            [hashtable]$OrgSummaryStats
         )
 
         Write-Host "`nGenerating HTML Report for '$($ReportTitle)'..."
@@ -281,15 +283,24 @@ try {
             [void]$htmlBuilder.AppendLine("    <option value='all'>All Organizations</option>")
             foreach ($org in $uniqueOrgs) {
                 $orgNameAttribute = $org -replace "'", "&apos;"
-                [void]$htmlBuilder.AppendLine("    <option value='${orgNameAttribute}'>$($org)</option>")
+                $stats = $OrgSummaryStats[$org]
+                [void]$htmlBuilder.AppendLine("    <option value='${orgNameAttribute}' `
+                    data-ws-compliance='$($stats.Workstation.Compliance)' `
+                    data-ws-total='$($stats.Workstation.Total)' `
+                    data-ws-compliant='$($stats.Workstation.Compliant)' `
+                    data-ws-noncompliant='$($stats.Workstation.NonCompliant)' `
+                    data-svr-compliance='$($stats.Server.Compliance)' `
+                    data-svr-total='$($stats.Server.Total)' `
+                    data-svr-compliant='$($stats.Server.Compliant)' `
+                    data-svr-noncompliant='$($stats.Server.NonCompliant)'>$($org)</option>")
             }
             [void]$htmlBuilder.AppendLine("  </select>")
             [void]$htmlBuilder.AppendLine("</div>")
         }
 
-        [void]$htmlBuilder.AppendLine("<div class='summary-section'><h2>Workstation Summary</h2><div class='summary-container'><div class='summary-box' style='background-color:$wsComplianceColor'><div class='value'>$($WorkstationDeviceStats.Compliance)%</div><div class='label'>Compliance</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.Total)</div><div class='label'>Total Machines</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.Compliant)</div><div class='label'>Compliant</div></div><div class='summary-box'><div class='value'>$($WorkstationDeviceStats.NonCompliant)</div><div class='label'>Non-Compliant</div></div></div></div>")
+        [void]$htmlBuilder.AppendLine("<div class='summary-section'><h2>Workstation Summary</h2><div class='summary-container'><div class='summary-box' id='ws-compliance-box' style='background-color:$wsComplianceColor'><div class='value' id='ws-compliance-value'>$($WorkstationDeviceStats.Compliance)%</div><div class='label'>Compliance</div></div><div class='summary-box'><div class='value' id='ws-total-value'>$($WorkstationDeviceStats.Total)</div><div class='label'>Total Machines</div></div><div class='summary-box'><div class='value' id='ws-compliant-value'>$($WorkstationDeviceStats.Compliant)</div><div class='label'>Compliant</div></div><div class='summary-box'><div class='value' id='ws-noncompliant-value'>$($WorkstationDeviceStats.NonCompliant)</div><div class='label'>Non-Compliant</div></div></div></div>")
         
-        [void]$htmlBuilder.AppendLine("<div class='summary-section'><h2>Server Summary</h2><div class='summary-container'><div class='summary-box' style='background-color:$svrComplianceColor'><div class='value'>$($ServerDeviceStats.Compliance)%</div><div class='label'>Compliance</div></div><div class='summary-box'><div class='value'>$($ServerDeviceStats.Total)</div><div class='label'>Total Machines</div></div><div class='summary-box'><div class='value'>$($ServerDeviceStats.Compliant)</div><div class='label'>Compliant</div></div><div class='summary-box'><div class='value'>$($ServerDeviceStats.NonCompliant)</div><div class='label'>Non-Compliant</div></div></div></div>")
+        [void]$htmlBuilder.AppendLine("<div class='summary-section'><h2>Server Summary</h2><div class='summary-container'><div class='summary-box' id='svr-compliance-box' style='background-color:$svrComplianceColor'><div class='value' id='svr-compliance-value'>$($ServerDeviceStats.Compliance)%</div><div class='label'>Compliance</div></div><div class='summary-box'><div class='value' id='svr-total-value'>$($ServerDeviceStats.Total)</div><div class='label'>Total Machines</div></div><div class='summary-box'><div class='value' id='svr-compliant-value'>$($ServerDeviceStats.Compliant)</div><div class='label'>Compliant</div></div><div class='summary-box'><div class='value' id='svr-noncompliant-value'>$($ServerDeviceStats.NonCompliant)</div><div class='label'>Non-Compliant</div></div></div></div>")
         
         # --- Split non-compliant devices into Servers and Workstations ---
         $nonCompliantDevices = $ReportData | Where-Object { $_.PatchStatus -ne 'Installed' }
@@ -311,13 +322,63 @@ try {
         # --- JavaScript for Filtering ---
         [void]$htmlBuilder.AppendLine("<script>
     const orgFilter = document.getElementById('orgFilter');
+    
+    // Store initial overall stats to revert back to
+    const initialStats = {
+        wsCompliance: '$($WorkstationDeviceStats.Compliance)',
+        wsTotal: '$($WorkstationDeviceStats.Total)',
+        wsCompliant: '$($WorkstationDeviceStats.Compliant)',
+        wsNonCompliant: '$($WorkstationDeviceStats.NonCompliant)',
+        svrCompliance: '$($ServerDeviceStats.Compliance)',
+        svrTotal: '$($ServerDeviceStats.Total)',
+        svrCompliant: '$($ServerDeviceStats.Compliant)',
+        svrNonCompliant: '$($ServerDeviceStats.NonCompliant)'
+    };
+
     if (orgFilter) {
         orgFilter.addEventListener('change', function() {
+            const selectedOption = this.options[this.selectedIndex];
             const selectedOrg = this.value;
+
+            if (selectedOrg === 'all') {
+                updateSummary(initialStats);
+            } else {
+                const newStats = {
+                    wsCompliance: selectedOption.getAttribute('data-ws-compliance'),
+                    wsTotal: selectedOption.getAttribute('data-ws-total'),
+                    wsCompliant: selectedOption.getAttribute('data-ws-compliant'),
+                    wsNonCompliant: selectedOption.getAttribute('data-ws-noncompliant'),
+                    svrCompliance: selectedOption.getAttribute('data-svr-compliance'),
+                    svrTotal: selectedOption.getAttribute('data-svr-total'),
+                    svrCompliant: selectedOption.getAttribute('data-svr-compliant'),
+                    svrNonCompliant: selectedOption.getAttribute('data-svr-noncompliant')
+                };
+                updateSummary(newStats);
+            }
             
             filterTable('server-table-container', selectedOrg);
             filterTable('workstation-table-container', selectedOrg);
         });
+    }
+
+    function getComplianceColor(compliance) {
+        if (compliance >= 95) return '#D5F5E3'; // Green
+        if (compliance >= 90) return '#FEF9E7'; // Yellow
+        return '#FADBD8'; // Red
+    }
+
+    function updateSummary(stats) {
+        document.getElementById('ws-compliance-value').textContent = stats.wsCompliance + '%';
+        document.getElementById('ws-total-value').textContent = stats.wsTotal;
+        document.getElementById('ws-compliant-value').textContent = stats.wsCompliant;
+        document.getElementById('ws-noncompliant-value').textContent = stats.wsNonCompliant;
+        document.getElementById('ws-compliance-box').style.backgroundColor = getComplianceColor(stats.wsCompliance);
+
+        document.getElementById('svr-compliance-value').textContent = stats.svrCompliance + '%';
+        document.getElementById('svr-total-value').textContent = stats.svrTotal;
+        document.getElementById('svr-compliant-value').textContent = stats.svrCompliant;
+        document.getElementById('svr-noncompliant-value').textContent = stats.svrNonCompliant;
+        document.getElementById('svr-compliance-box').style.backgroundColor = getComplianceColor(stats.svrCompliance);
     }
 
     function filterTable(containerId, selectedOrg) {
@@ -472,39 +533,54 @@ try {
         Compliance = if ($svrTotalCount -gt 0) { [math]::Round(($svrCompliantCount / $svrTotalCount) * 100) } else { 100 }
     }
 
-    ConvertTo-HtmlReport -ReportData $finalReportObjects -OutputFile $outputHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $workstationDeviceStats -ServerDeviceStats $serverDeviceStats -TotalDeviceCount $finalReportObjects.Count -ReportDate $reportStartDate -IsCurrentMonthReport $isCurrentMonthReport
+    # --- Pre-calculate summary stats for each organization for the interactive dropdown ---
+    $orgSummaryStats = @{}
+    $allOrgsInReport = $finalReportObjects.Organization | Select-Object -Unique
+    foreach ($orgName in $allOrgsInReport) {
+        $orgDevices = $finalReportObjects | Where-Object { $_.Organization -eq $orgName }
+        
+        $orgWorkstations = $orgDevices | Where-Object { $_.OS_Version -like "*Workstation*" -or $_.OS_Version -like "*Windows 1*" }
+        $orgServers = $orgDevices | Where-Object { $_.OS_Version -like "*Server*" }
+
+        $orgWsCompliantCount = ($orgWorkstations | Where-Object { $_.PatchStatus -eq 'Installed' }).Count
+        $orgWsTotalCount = $orgWorkstations.Count
+        $orgWorkstationStats = @{
+            Total = $orgWsTotalCount
+            Compliant = $orgWsCompliantCount
+            NonCompliant = $orgWsTotalCount - $orgWsCompliantCount
+            Compliance = if ($orgWsTotalCount -gt 0) { [math]::Round(($orgWsCompliantCount / $orgWsTotalCount) * 100) } else { 100 }
+        }
+
+        $orgSvrCompliantCount = ($orgServers | Where-Object { $_.PatchStatus -eq 'Installed' }).Count
+        $orgSvrTotalCount = $orgServers.Count
+        $orgServerStats = @{
+            Total = $orgSvrTotalCount
+            Compliant = $orgSvrCompliantCount
+            NonCompliant = $orgSvrTotalCount - $orgSvrCompliantCount
+            Compliance = if ($orgSvrTotalCount -gt 0) { [math]::Round(($orgSvrCompliantCount / $orgSvrTotalCount) * 100) } else { 100 }
+        }
+
+        $orgSummaryStats[$orgName] = @{
+            Workstation = $orgWorkstationStats
+            Server = $orgServerStats
+        }
+    }
+
+    ConvertTo-HtmlReport -ReportData $finalReportObjects -OutputFile $outputHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $workstationDeviceStats -ServerDeviceStats $serverDeviceStats -TotalDeviceCount $finalReportObjects.Count -ReportDate $reportStartDate -IsCurrentMonthReport $isCurrentMonthReport -OrgSummaryStats $orgSummaryStats
 
     # --- (Optional) Generate a separate report for each organization ---
     if ($generateOrgReports -eq 1) {
-        $uniqueOrgs = $finalReportObjects.Organization | Select-Object -Unique
-        foreach ($orgName in $uniqueOrgs) {
+        # This loop uses the pre-calculated stats from above
+        foreach ($orgName in $allOrgsInReport) {
             $orgDevices = $finalReportObjects | Where-Object { $_.Organization -eq $orgName }
             
-            $orgWorkstations = $orgDevices | Where-Object { $_.OS_Version -like "*Workstation*" -or $_.OS_Version -like "*Windows 1*" }
-            $orgServers = $orgDevices | Where-Object { $_.OS_Version -like "*Server*" }
-
-            $orgWsCompliantCount = ($orgWorkstations | Where-Object { $_.PatchStatus -eq 'Installed' }).Count
-            $orgWsTotalCount = $orgWorkstations.Count
-            $orgWorkstationStats = @{
-                Total = $orgWsTotalCount
-                Compliant = $orgWsCompliantCount
-                NonCompliant = $orgWsTotalCount - $orgWsCompliantCount
-                Compliance = if ($orgWsTotalCount -gt 0) { [math]::Round(($orgWsCompliantCount / $orgWsTotalCount) * 100) } else { 100 }
-            }
-
-            $orgSvrCompliantCount = ($orgServers | Where-Object { $_.PatchStatus -eq 'Installed' }).Count
-            $orgSvrTotalCount = $orgServers.Count
-            $orgServerStats = @{
-                Total = $orgSvrTotalCount
-                Compliant = $orgSvrCompliantCount
-                NonCompliant = $orgSvrTotalCount - $orgSvrCompliantCount
-                Compliance = if ($orgSvrTotalCount -gt 0) { [math]::Round(($orgSvrCompliantCount / $orgSvrTotalCount) * 100) } else { 100 }
-            }
+            $orgWorkstationStats = $orgSummaryStats[$orgName].Workstation
+            $orgServerStats = $orgSummaryStats[$orgName].Server
             
             $safeOrgName = $orgName -replace '[^a-zA-Z0-9]', '-'
             $orgHtmlFile = Join-Path -Path $outputDir -ChildPath "PatchReport_$($safeOrgName).html"
 
-            ConvertTo-HtmlReport -ReportData $orgDevices -OutputFile $orgHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $orgWorkstationStats -ServerDeviceStats $orgServerStats -ReportTitle "$orgName Patch Report" -TotalDeviceCount $orgDevices.Count -ReportDate $reportStartDate -IsCurrentMonthReport $isCurrentMonthReport
+            ConvertTo-HtmlReport -ReportData $orgDevices -OutputFile $orgHtmlFile -ApiBaseUrl $API_BASE_URL -WorkstationDeviceStats $orgWorkstationStats -ServerDeviceStats $orgServerStats -ReportTitle "$orgName Patch Report" -TotalDeviceCount $orgDevices.Count -ReportDate $reportStartDate -IsCurrentMonthReport $isCurrentMonthReport -OrgSummaryStats $orgSummaryStats
         }
     }
 
